@@ -1,0 +1,263 @@
+#!/usr/bin/python2
+#
+# author      : Aziz Amerul Faozi
+# description : This code will use for testing ocr
+#
+import os
+import requests
+import mysql.connector
+import time
+from mysql.connector import errorcode
+import base64
+import numpy as np
+import pytesseract
+import cv2
+
+class ocrnanda:
+
+    # Class Variable
+    
+    conn = None
+    DevID = None
+    Data = None
+    RefSN = None
+    init_x = None
+    init_y = None
+    Image = None
+    Teks = None
+    idFileTransferStage = None
+    path = None
+    flagUp = None
+
+    conn = None
+    config = {
+        'user':'pos_almar',
+        'password':'@Alm4r2020',
+        'host':'127.0.0.1',
+        'port':'3306',
+        'database':'trumon'
+    }
+
+
+    def __init__(self, SeqNum, DeviceID, RefSN, ImageBlob):
+        # save image
+        #
+        #
+        #
+        # Constructor for this class
+        self.path = "image/" + str(SeqNUM)+".png"
+        self.DevID = DeviceID
+        self.Image = ImageBlob
+        self.RefSN = SeqNum
+        self.idFileTransferStage = RefSN
+        self.conn = mysql.connector.connect(**self.config)
+        #self.ImageSave()
+        self.ImageTranslate()
+        print("error")
+        
+
+    def ImageSave(self):
+        fout = open(self.path, 'wb')
+        fout.write(self.Image)
+        fout.close()
+        
+
+    def ImageTranslate(self):
+        global error_count
+        # get file from filename
+
+        try:
+            #files = {'base': open(self.path, 'rb')}
+            #files = {'file': self.Image}
+            response = requests.post('http://api.shuhuf.aiseeyou.tech/api/ocrb64BBoxNorm', json={"b64img":self.Image} )
+        except:
+            error_count = 0
+            print("==================")
+            print("local OCR >>>")
+            time.sleep(3)
+            self.LocalOCR()
+        else:
+            if response.status_code == 200:
+                self.Teks=response.json()["OCR"]
+                self.flagUp=1
+                self.SaveTeksToTable()
+                print(str(self.idFileTransferStage) + " converted")
+            else:
+                if(error_count < 3) :
+                    error_count += 1
+                    print("==================")
+                    print(response)
+                    print("reconnect >>>")
+                    time.sleep(3)
+                    self.ImageTranslate()
+                else :
+                    error_count = 0
+                    print("==================")
+                    print(response)
+                    print("local OCR >>>")
+                    time.sleep(3)
+		    self.flagUp=99
+		    self.UpdateFlag()
+                    #self.LocalOCR()
+		    # jika menginginkan local ocr comment flagup dan UpdateFlag
+		    # dan uncomment localOCR
+
+    def LocalOCR(self):
+        fin = open("temp.txt","w")
+        fin.write(self.Image)
+        fin.close()
+
+        fin = open("temp.txt","rb")
+        data = fin.read()
+        fin.close()
+
+        fout = open("base64.png", "wb")
+        fout.write(base64.decodebytes(data))
+        fout.close()
+
+        imgOri = cv2.imread("base64.png")
+        height, width, numChannels = imgOri.shape
+        bordersize = 32
+        border = cv2.copyMakeBorder(
+            imgOri,
+            top=bordersize,
+            bottom=bordersize,
+            left=bordersize,
+            right=bordersize,
+            borderType=cv2.BORDER_CONSTANT,
+            value=[255, 255, 255]
+        )
+        imgOri = border
+        height, width, numChannels = imgOri.shape
+        imgGray = np.zeros((height, width, 1), np.uint8)
+        imgGray = cv2.cvtColor(imgOri, cv2.COLOR_RGB2GRAY)
+        imgGray = cv2.resize(imgGray, (0, 0), fx = 1.6, fy = 1.6)
+
+        # Image Conditioning to remove noise and maintain edges
+        imgBlurred = np.zeros((height, width, 1), np.uint8)
+        imgBlurred = cv2.GaussianBlur(imgGray, (5, 5), 0)
+
+        custom_config = r'--psm 4 --oem 3'
+        ocr_text = pytesseract.image_to_string(imgBlurred, config=custom_config)
+
+        buffer = ""
+        old_value = 10
+        for q in range(len(ocr_text)):
+            value = ord(ocr_text[q])
+
+            if ((value >= 32 and value < 127) or value == 10):
+                if(value == 10 and old_value == 10):
+                    pass
+                else:
+                    buffer = buffer + ocr_text[q]  # buffer diisi char readable
+                    old_value = value
+
+        ocr_text = buffer
+        buffer = ""
+        c_mode = False
+        for q in range(len(ocr_text)):
+            value = ord(ocr_text[q])
+
+            if c_mode:
+                if(value == 32):
+                    if((q+1) < len(ocr_text)):
+                        next = ord(ocr_text[q+1])
+                        if(next >= 48 and next <= 57):
+                            buffer += '.'
+                        else:
+                            prev = ord(buffer[-3])
+                            if(prev != 46):
+                                buffer = buffer[:-2] + '.' + buffer[-2:]
+                                print(buffer[-2:])
+                            buffer += ' '
+                    else:
+                        buffer += ocr_text[q]
+                    c_mode =  False
+                elif(value == 46):
+                    buffer += ocr_text[q]
+                    c_mode =  False
+                elif(value == 10):
+                    prev = ord(buffer[-3])
+                    if(prev != 46):
+                        buffer = buffer[:-2] + '.' + buffer[-2:]
+                        print(buffer[-2:])
+                    buffer += ocr_text[q]
+                    c_mode =  False
+                else:
+                    buffer += ocr_text[q]
+            else:
+                buffer += ocr_text[q]
+                if(value == 75):
+                    c_mode = True
+
+        buffer = buffer.replace('KO0.','K0.')
+        buffer = buffer.replace('KO.','K0.')
+ 
+        # rewrite variable
+        self.Teks=buffer
+        self.flagUp=2
+        self.SaveTeksToTable()
+
+        print(str(self.idFileTransferStage) + " converted")
+
+    def SaveTeksToTable(self):
+        # Save to teks
+        curr = self.conn.cursor()
+        print("SaveTeksToTable")
+        query=(""" INSERT INTO `Teks`(`DeviceId`, `RefSN`, `Data`) VALUES (%s, %s, %s)""")
+        curr.execute(query, (self.DevID, self.RefSN, self.Teks))
+        self.conn.commit()
+        self.UpdateFlag()
+        curr.close()
+
+    def UpdateFlag(self):
+        # update flag
+        mycursor = self.conn.cursor()
+        query = "UPDATE Ibase SET Flag='%s' WHERE SeqNum = '%s'"
+        print("+= da =+")
+        mycursor.execute(query, (self.flagUp, self.RefSN, ))
+        self.conn.commit()
+        #self.UpdateFlag()
+        mycursor.close()
+
+        #os.remove("image/temp.png")
+
+    def __del__(self):
+
+        print("Destruktor")
+        del self.Image
+        del self.idFileTransferStage
+        # del self.Teks
+
+# Main program
+config = {
+    'user':'pos_almar',
+    'password':'@Alm4r2020',
+    'host':'127.0.0.1',
+    'port':3306,
+    'database':'trumon'
+}
+
+print("mantap")
+error_count = 0
+conn = mysql.connector.connect(**config)
+sql_get_query = """select * from Ibase where Flag='0'""";
+curr = conn.cursor()
+curr.execute(sql_get_query)
+rows = curr.fetchall()
+for row in rows:
+    # SeqNUM  ->
+    # RefSN ->
+    # ImageBlob ->
+    SeqNUM = row[0]
+    print("SeqNUM "+ str(SeqNUM))
+    DeviceID = row[1]
+    
+    RefSN = row[2]
+    ImageBlob =row[3]
+    
+    ocrnanda(SeqNUM, DeviceID, RefSN, ImageBlob)
+
+print("edan")
+curr.close()
+conn.close()
